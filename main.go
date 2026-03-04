@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 
 	"github.com/uwubear123/go-server-chirpy/internal/database"
@@ -16,6 +17,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	platform       string
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -25,9 +27,18 @@ func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+type User struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Email     string `json:"email"`
+}
+
 func main() {
 	const filepathRoot = "."
 	const port = "8080"
+
+	godotenv.Load()
 
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
@@ -38,7 +49,8 @@ func main() {
 	dbQueries := database.New(db)
 
 	cfg := &apiConfig{
-		db: dbQueries,
+		db:       dbQueries,
+		platform: os.Getenv("PLATFORM"),
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(filepathRoot)))))
@@ -46,7 +58,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", cfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", cfg.handlerResetMetrics)
 	mux.HandleFunc("POST /api/validate_chirp", cfg.handlerValidate)
-
+	mux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
