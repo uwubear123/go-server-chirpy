@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -75,13 +77,49 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) {
-	dbChirps, err := cfg.db.ListChirps(r.Context())
-	if err != nil {
-		respondWithError(w, 500, "Internal error", err)
+	authorIDStr := r.URL.Query().Get("author_id")
+	authorID := uuid.Nil
+	if authorIDStr != "" {
+		parsedAuthorID, err := uuid.Parse(authorIDStr)
+		if err != nil {
+			respondWithError(w, 400, "Invalid author_id query parameter", err)
+			return
+		}
+		authorID = parsedAuthorID
+	}
+
+	sortOrder := r.URL.Query().Get("sort")
+	if sortOrder != "" && sortOrder != "asc" && sortOrder != "desc" {
+		respondWithError(w, 400, "Invalid sort query parameter", nil)
 		return
 	}
 
-	chirps := []Chirp{}
+	var (
+		dbChirps []database.Chirp
+		err      error
+	)
+
+	if authorID != uuid.Nil {
+		dbChirps, err = cfg.db.ListChirpsByAuthor(r.Context(), authorID)
+		if err != nil {
+			respondWithError(w, 500, "Internal error", err)
+			return
+		}
+	} else {
+		dbChirps, err = cfg.db.ListChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 500, "Internal error", err)
+			return
+		}
+	}
+
+	if sortOrder == "desc" {
+		for i, j := 0, len(dbChirps)-1; i < j; i, j = i+1, j-1 {
+			dbChirps[i], dbChirps[j] = dbChirps[j], dbChirps[i]
+		}
+	}
+
+	chirps := make([]Chirp, 0, len(dbChirps))
 	for _, dbChirp := range dbChirps {
 		chirps = append(chirps, Chirp{
 			ID:        dbChirp.ID.String(),
@@ -115,4 +153,48 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 		Body:      dbChirp.Body,
 		UserID:    dbChirp.UserID.String(),
 	})
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Missing or invalid token", nil)
+		return
+	}
+
+	idStr := r.PathValue("chirpID")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		respondWithError(w, 400, "Invalid chirpID", nil)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secretKey)
+	if err != nil {
+		respondWithError(w, 401, "Invalid token", nil)
+		return
+	}
+
+	dbChirp, err := cfg.db.GetChirp(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found", nil)
+			return
+		}
+		respondWithError(w, 500, "Internal error", err)
+		return
+	}
+
+	if dbChirp.UserID != userID {
+		respondWithError(w, 403, "Forbidden", nil)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 500, "Internal error", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

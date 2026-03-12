@@ -47,10 +47,11 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	user := User{
-		ID:        dbUser.ID.String(),
-		CreatedAt: dbUser.CreatedAt.String(),
-		UpdatedAt: dbUser.UpdatedAt.String(),
-		Email:     dbUser.Email,
+		ID:          dbUser.ID.String(),
+		CreatedAt:   dbUser.CreatedAt.String(),
+		UpdatedAt:   dbUser.UpdatedAt.String(),
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 
 	respondWithJSON(w, 201, user)
@@ -105,6 +106,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    dbUser.CreatedAt.String(),
 		UpdatedAt:    dbUser.UpdatedAt.String(),
 		Email:        dbUser.Email,
+		IsChirpyRed:  dbUser.IsChirpyRed,
 		Token:        token,
 		RefreshToken: refreshToken,
 	}
@@ -162,4 +164,80 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Missing or invalid token", nil)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.secretKey)
+	if err != nil {
+		respondWithError(w, 401, "Missing or invalid token", nil)
+		return
+	}
+
+	type updateUserParams struct {
+		Email    string `json:"email,omitempty"`
+		Password string `json:"password,omitempty"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := updateUserParams{}
+
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, "Internal error", err)
+		return
+	}
+
+	if params.Email == "" && params.Password == "" {
+		respondWithError(w, 400, "No fields to update", nil)
+		return
+	}
+
+	if params.Password != "" {
+		hashedPassword, err := auth.HashPassword(params.Password)
+		if err != nil {
+			respondWithError(w, 500, "Error hashing password", err)
+			return
+		}
+		params.Password = hashedPassword
+	}
+
+	dbUser, err := cfg.db.GetUserByID(r.Context(), userID)
+	if err != nil {
+		respondWithError(w, 500, "Internal error", err)
+		return
+	}
+
+	newEmail := dbUser.Email
+	if params.Email != "" {
+		newEmail = params.Email
+	}
+
+	newHashedPassword := dbUser.HashedPassword
+	if params.Password != "" {
+		newHashedPassword = params.Password
+	}
+
+	updatedUser, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		ID:             dbUser.ID,
+		Email:          newEmail,
+		HashedPassword: newHashedPassword,
+	})
+	if err != nil {
+		respondWithError(w, 500, "Internal error", err)
+		return
+	}
+
+	respondWithJSON(w, 200, User{
+		ID:          updatedUser.ID.String(),
+		CreatedAt:   updatedUser.CreatedAt.String(),
+		UpdatedAt:   updatedUser.UpdatedAt.String(),
+		Email:       updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed,
+	})
 }
